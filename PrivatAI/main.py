@@ -8,8 +8,8 @@ import fitz  # PyMuPDF
 import random
 import string
 from PIL import Image
+import traceback
 
-# Импорты из PyQt5
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QPushButton, QTextEdit, QFileDialog, 
                            QMessageBox, QProgressBar, QComboBox, QCheckBox, QGridLayout,
@@ -18,39 +18,42 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, QVB
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QFont, QTextDocument
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QBuffer, QIODevice, QSize
 
-# Импорт чат-бота
-from chatbot import ChatBot
+try:
+    from chatbot import ChatBot
+    CHATBOT_AVAILABLE = True
+except ImportError:
+    CHATBOT_AVAILABLE = False
 
-# Настраиваем путь к tesseract, если он не в PATH
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Для Windows
-# Для Linux/Mac обычно не требуется, если установлен через пакетный менеджер
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 class AnonymizerEngine:
     def __init__(self):
-        # Регулярные выражения для распознавания персональных данных
+        # Расширенные регулярные выражения для лучшего обнаружения данных
         self.patterns = {
-            'ИИН': r'\b\d{12}\b',  # 12 цифр для ИИН Казахстана
-            'Телефон': r'\+?[7]\s?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}',  # Казахстанский формат
+            'ИИН': r'\b\d{12}\b|\b\d{3}[\s.-]?\d{3}[\s.-]?\d{6}\b|\b\d{6}[\s.-]?\d{6}\b',
+            'Телефон': r'\+?[7]\s?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}|\b\d{10}\b|\b\d{11}\b|\+?\d{1,3}[\s-]?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4}',
             'Email': r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
             'Банковская карта': r'\b(?:\d{4}[\s-]?){4}\b|\b\d{16}\b',
-            'ФИО': r'\b[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b',  # Простой паттерн для ФИО
-            'Банковский счет': r'\b\d{20}\b',  # 20 цифр для банковского счета Казахстана
-            'IBAN': r'\b[A-Z]{2}\d{2}[A-Z0-9]{4}[0-9]{16}\b',  # Типичный формат IBAN
-            'Дата рождения': r'\b(0[1-9]|[12][0-9]|3[01])[./-](0[1-9]|1[0-2])[./-](19|20)\d\d\b'  # ДД.ММ.ГГГГ
+            'ФИО': r'\b[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b|\b[A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b',
+            'Банковский счет': r'\b\d{20}\b|\b\d{4}[\s.-]?\d{4}[\s.-]?\d{4}[\s.-]?\d{4}[\s.-]?\d{4}\b',
+            'IBAN': r'\b[A-Z]{2}\d{2}[A-Z0-9]{4}[0-9]{16}\b|\b[A-Z]{2}[\s-]?\d{2}[\s-]?[A-Z0-9]{4}[\s-]?[0-9]{4}[\s-]?[0-9]{4}[\s-]?[0-9]{4}[\s-]?[0-9]{4}\b',
+            'Дата рождения': r'\b(0[1-9]|[12][0-9]|3[01])[./-](0[1-9]|1[0-2])[./-](19|20)\d\d\b|\b(19|20)\d\d[./-](0[1-9]|1[0-2])[./-](0[1-9]|[12][0-9]|3[01])\b',
+            'Возраст': r'\b(возраст|лет|год(?:а)?|годов)[\s:]*\d{1,3}\b|\b\d{1,3}\s*(?:лет|год(?:а)?|годов)\b'
         }
         
-        # Словарь для хранения распознанных данных (для отчета)
         self.detected_data = {}
         
-        # Загрузка каскадов для распознавания лиц
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+        try:
+            self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+            self.face_detection_available = True
+        except Exception:
+            self.face_detection_available = False
         
     def anonymize_text(self, text, data_types=None):
         if data_types is None:
             data_types = self.patterns.keys()
             
-        # Очищаем предыдущие найденные данные
         self.detected_data = {data_type: [] for data_type in data_types}
         
         anonymized_text = text
@@ -58,23 +61,23 @@ class AnonymizerEngine:
             if data_type in self.patterns:
                 pattern = self.patterns[data_type]
                 
-                # Находим все совпадения
                 matches = re.finditer(pattern, anonymized_text)
                 for match in matches:
                     found_text = match.group(0)
                     start, end = match.span()
                     
-                    # Добавляем найденные данные для отчета
                     self.detected_data[data_type].append(found_text)
                     
-                    # Заменяем персональные данные на маску
                     if data_type == 'ИИН':
                         mask = 'XXX-XXX-XXXX'
                     elif data_type == 'Телефон':
                         mask = '+X-XXX-XXX-XXXX'
                     elif data_type == 'Email':
-                        username, domain = found_text.split('@')
-                        mask = username[0] + 'X' * (len(username) - 2) + username[-1] + '@' + domain
+                        if '@' in found_text:
+                            username, domain = found_text.split('@')
+                            mask = username[0] + 'X' * (len(username) - 2) + username[-1] + '@' + domain
+                        else:
+                            mask = 'X' * len(found_text)
                     elif data_type == 'Банковская карта':
                         mask = 'XXXX-XXXX-XXXX-' + found_text[-4:]
                     elif data_type == 'Банковский счет':
@@ -88,6 +91,8 @@ class AnonymizerEngine:
                             mask += ' ' + part[0] + 'X' * (len(part) - 1)
                     elif data_type == 'Дата рождения':
                         mask = 'XX.XX.XXXX'
+                    elif data_type == 'Возраст':
+                        mask = 'XX лет'
                     else:
                         mask = 'X' * len(found_text)
                         
@@ -96,37 +101,46 @@ class AnonymizerEngine:
         return anonymized_text
     
     def detect_and_blur_faces(self, image, blur_factor=35):
+        if not self.face_detection_available:
+            return image, 0
+            
         try:
+            if image is None or len(image.shape) < 2:
+                return image, 0
+                
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+            
+            faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
             
             face_count = len(faces)
             
-            # Для каждого обнаруженного лица
-            for (x, y, w, h) in faces:
-                # Вырезаем область лица
-                face_roi = image[y:y+h, x:x+w]
-                
-                # Размываем лицо
-                blurred_face = cv2.GaussianBlur(face_roi, (blur_factor, blur_factor), 0)
-                
-                # Заменяем область на размытую версию
-                image[y:y+h, x:x+w] = blurred_face
+            if face_count > 0:
+                for (x, y, w, h) in faces:
+                    try:
+                        x, y = max(0, x), max(0, y)
+                        w = min(w, image.shape[1] - x)
+                        h = min(h, image.shape[0] - y)
+                        
+                        if w > 0 and h > 0:
+                            face_roi = image[y:y+h, x:x+w]
+                            
+                            blurred_face = cv2.GaussianBlur(face_roi, (blur_factor, blur_factor), 0)
+                            
+                            image[y:y+h, x:x+w] = blurred_face
+                    except Exception:
+                        continue
             
             return image, face_count
-        except Exception as e:
-            # В случае ошибки возвращаем оригинальное изображение и 0 лиц
+        except Exception:
             return image, 0
     
     def anonymize_image(self, image_path, data_types=None, detect_faces=True):
         if data_types is None:
             data_types = self.patterns.keys()
             
-        # Загружаем изображение
         try:
             image = cv2.imread(image_path)
             if image is None:
-                # Альтернативный способ загрузки с использованием PIL
                 pil_image = Image.open(image_path)
                 image = np.array(pil_image.convert('RGB'))
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
@@ -136,56 +150,119 @@ class AnonymizerEngine:
         except Exception as e:
             return None, f"Ошибка при загрузке изображения: {str(e)}"
             
-        # Создаем копию для анонимизированной версии
         anonymized_image = image.copy()
         
-        # Детектируем и маскируем лица, если включена опция
+        self.detected_data = {data_type: [] for data_type in data_types}
         if detect_faces:
-            anonymized_image, face_count = self.detect_and_blur_faces(anonymized_image)
-            if face_count > 0:
-                self.detected_data['Лица'] = [f"Обнаружено лиц: {face_count}"]
+            self.detected_data["Лица"] = []
         
-        # Используем pytesseract для извлечения текста и его расположения
+        face_count = 0
+        if detect_faces:
+            try:
+                anonymized_image, face_count = self.detect_and_blur_faces(anonymized_image)
+                if face_count > 0:
+                    self.detected_data["Лица"].append(f"Обнаружено лиц: {face_count}")
+            except Exception:
+                pass
+        
         try:
-            # Конвертируем в градации серого для лучшего распознавания
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             text_data = pytesseract.image_to_data(gray, lang='rus+eng', output_type=pytesseract.Output.DICT)
             
-            # Очищаем предыдущие найденные данные (если не было обнаружено лиц)
-            if 'Лица' not in self.detected_data:
-                self.detected_data = {data_type: [] for data_type in data_types}
-            else:
-                # Иначе инициализируем только отсутствующие ключи
-                for data_type in data_types:
-                    if data_type not in self.detected_data:
-                        self.detected_data[data_type] = []
-            
-            # Объединяем слова в строки для более точного сопоставления с шаблонами
             full_text = " ".join(text_data['text'])
             
-            # Анонимизируем найденный текст
             for data_type in data_types:
                 if data_type in self.patterns:
                     pattern = self.patterns[data_type]
                     
-                    # Ищем соответствия в полном тексте
                     for match in re.finditer(pattern, full_text):
                         found_text = match.group(0)
                         self.detected_data[data_type].append(found_text)
                         
-                        # Ищем соответствующие слова на изображении
                         for i, word in enumerate(text_data['text']):
                             if word and word in found_text:
-                                # Закрашиваем область с персональными данными
                                 x, y, w, h = text_data['left'][i], text_data['top'][i], text_data['width'][i], text_data['height'][i]
                                 cv2.rectangle(anonymized_image, (x, y), (x + w, y + h), (0, 0, 0), -1)
-        except Exception as e:
-            # Если произошла ошибка при распознавании текста, просто продолжаем
-            # и возвращаем изображение с замаскированными лицами
+        except Exception:
             pass
         
+        for key in list(self.detected_data.keys()):
+            if not self.detected_data[key]:
+                del self.detected_data[key]
+                
         return anonymized_image, "Изображение обработано"
     
+    # Новая функция для проверки, является ли PDF сканированным документом
+    def is_scanned_pdf(self, pdf_document):
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            if len(page.get_text().strip()) < 50 and len(page.get_images()) > 0:
+                return True
+        return False
+    
+    # Новая функция для OCR обработки сканированных PDF
+    def process_scanned_pdf(self, pdf_path, data_types=None, detect_faces=True):
+        if data_types is None:
+            data_types = self.patterns.keys()
+            
+        pdf_document = fitz.open(pdf_path)
+        self.detected_data = {data_type: [] for data_type in data_types}
+        if detect_faces:
+            self.detected_data["Лица"] = []
+            
+        temp_files = []
+        new_pdf = fitz.open()
+        
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            pix = page.get_pixmap(alpha=False)
+            img_path = f"temp_page_{random.randint(1000, 9999)}.png"
+            temp_files.append(img_path)
+            pix.save(img_path)
+            
+            # OCR обработка страницы
+            img = cv2.imread(img_path)
+            
+            # Обработка текста через OCR
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            text = pytesseract.image_to_string(gray, lang='rus+eng')
+            
+            # Поиск персональных данных в тексте
+            for data_type in data_types:
+                if data_type in self.patterns:
+                    pattern = self.patterns[data_type]
+                    for match in re.finditer(pattern, text):
+                        found_text = match.group(0)
+                        self.detected_data[data_type].append(f"Стр. {page_num+1}: {found_text}")
+            
+            # Обработка и размытие лиц
+            if detect_faces:
+                processed_img, face_count = self.detect_and_blur_faces(img)
+                if face_count > 0:
+                    self.detected_data["Лица"].append(f"Стр. {page_num+1}: {face_count} лиц")
+                    cv2.imwrite(img_path, processed_img)
+            
+            # Создаем новую страницу
+            new_page = new_pdf.new_page(width=page.rect.width, height=page.rect.height)
+            new_page.insert_image(new_page.rect, filename=img_path)
+        
+        # Сохраняем измененный PDF
+        temp_path = pdf_path.replace('.pdf', '_anonymized.pdf')
+        new_pdf.save(temp_path)
+        new_pdf.close()
+        pdf_document.close()
+        
+        # Удаляем временные файлы
+        for temp_file in temp_files:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+                    
+        return temp_path, "PDF обработан с использованием OCR"
+    
+    # Улучшенная функция анонимизации PDF
     def anonymize_pdf(self, pdf_path, data_types=None, detect_faces=True):
         if data_types is None:
             data_types = self.patterns.keys()
@@ -194,86 +271,164 @@ class AnonymizerEngine:
             # Открываем PDF-файл
             pdf_document = fitz.open(pdf_path)
             
-            # Очищаем предыдущие найденные данные
+            # Проверяем, является ли PDF сканированным документом
+            if self.is_scanned_pdf(pdf_document):
+                pdf_document.close()
+                return self.process_scanned_pdf(pdf_path, data_types, detect_faces)
+            
+            # Инициализируем словарь для отчета
             self.detected_data = {data_type: [] for data_type in data_types}
             if detect_faces:
-                self.detected_data['Лица'] = []
+                self.detected_data["Лица"] = []
             
-            # Для хранения анонимизированного текста страниц
-            anonymized_pages = []
+            # Для хранения путей временных файлов
+            temp_files = []
             
             # Обрабатываем каждую страницу
             for page_num in range(len(pdf_document)):
                 page = pdf_document[page_num]
                 
-                # Извлекаем текст со страницы
-                text = page.get_text()
+                # Различные подходы к извлечению текста
+                text_words = page.get_text("words")  # Получаем список слов с координатами
+                text_blocks = page.get_text("blocks")  # Получаем блоки текста
+                text_whole = page.get_text("text")  # Весь текст страницы
                 
-                # Анонимизируем текст
-                anonymized_text = self.anonymize_text(text, data_types)
-                anonymized_pages.append(anonymized_text)
+                # Ищем персональные данные во всем тексте страницы
+                for data_type in data_types:
+                    if data_type in self.patterns:
+                        pattern = self.patterns[data_type]
+                        
+                        # Поиск в целом тексте
+                        for match in re.finditer(pattern, text_whole):
+                            found_text = match.group(0)
+                            self.detected_data[data_type].append(f"Стр. {page_num+1}: {found_text}")
+                            
+                            # Создаем редакцию для каждого совпадения
+                            instances = []
+                            
+                            # Ищем в словах точные совпадения или части
+                            for word_info in text_words:
+                                word = word_info[4]
+                                if word in found_text or found_text in word:
+                                    rect = fitz.Rect(word_info[:4])
+                                    instances.append(rect)
+                            
+                            # Если нашли экземпляры слова на странице
+                            if instances:
+                                # Создаем аннотации редактирования для каждого экземпляра
+                                for rect in instances:
+                                    annot = page.add_redact_annot(rect, fill=(0, 0, 0))
+                                    if data_type == 'ИИН':
+                                        annot.set_info(content="XXX-XXX-XXXX")
+                                    elif data_type == 'Телефон':
+                                        annot.set_info(content="+X-XXX-XXX-XXXX")
+                                    elif data_type == 'Email':
+                                        parts = found_text.split('@')
+                                        if len(parts) > 1:
+                                            username, domain = parts
+                                            mask = username[0] + "X" * (len(username) - 2) + username[-1] + "@" + domain
+                                            annot.set_info(content=mask)
+                                    elif data_type == 'ФИО':
+                                        parts = found_text.split()
+                                        mask = ""
+                                        for i, part in enumerate(parts):
+                                            if i > 0:
+                                                mask += " "
+                                            mask += part[0] + "X" * (len(part) - 1)
+                                        annot.set_info(content=mask)
+                                    else:
+                                        annot.set_info(content="X" * len(found_text))
                 
-                # Обработка изображений на странице
-                try:
-                    image_list = page.get_images(full=True)
-                    
-                    for img_index, img_info in enumerate(image_list):
-                        try:
-                            xref = img_info[0]
-                            base_image = pdf_document.extract_image(xref)
-                            image_bytes = base_image["image"]
-                            
-                            # Конвертируем bytes в изображение
-                            nparr = np.frombuffer(image_bytes, np.uint8)
-                            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                            
-                            if img is not None and detect_faces:
-                                # Обнаруживаем и размываем лица
-                                anonymized_img, face_count = self.detect_and_blur_faces(img)
+                # Применяем редактирование
+                page.apply_redactions()
+                
+                # Обработка изображений на странице, если включена опция обнаружения лиц
+                if detect_faces:
+                    try:
+                        # Получаем список изображений на странице
+                        image_list = page.get_images(full=True)
+                        
+                        # Обрабатываем каждое изображение
+                        for img_index, img_info in enumerate(image_list):
+                            try:
+                                # Извлекаем изображение
+                                xref = img_info[0]
+                                base_image = pdf_document.extract_image(xref)
+                                image_bytes = base_image["image"]
                                 
-                                if face_count > 0:
-                                    # Добавляем информацию о найденных лицах
-                                    self.detected_data['Лица'].append(f"Стр. {page_num+1}, изобр. {img_index+1}: {face_count} лиц")
+                                # Конвертируем bytes в изображение
+                                nparr = np.frombuffer(image_bytes, np.uint8)
+                                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                                
+                                # Если изображение удалось загрузить
+                                if img is not None:
+                                    # Размываем лица на изображении
+                                    anonymized_img, face_count = self.detect_and_blur_faces(img)
                                     
-                                    # Сохраняем анонимизированное изображение во временный файл
-                                    temp_img_path = f"temp_img_{random.randint(1000, 9999)}.png"
-                                    cv2.imwrite(temp_img_path, anonymized_img)
-                                    
-                                    # Заменяем изображение в PDF
-                                    rect = page.get_image_rects(xref)[0]  # Получаем положение изображения
-                                    page.delete_image(xref)  # Удаляем оригинальное изображение
-                                    page.insert_image(rect, filename=temp_img_path)  # Вставляем анонимизированное
-                                    
-                                    # Удаляем временный файл
-                                    if os.path.exists(temp_img_path):
-                                        os.remove(temp_img_path)
-                        except Exception as e:
-                            # Пропускаем изображение при ошибке
-                            continue
-                except Exception as e:
-                    # Пропускаем обработку изображений, если возникла ошибка
-                    pass
-                
-                # Создаем новую страницу с анонимизированным текстом
-                try:
-                    page.apply_redactions()  # Очищаем страницу
-                    page.insert_text((50, 50), anonymized_text)  # Вставляем анонимизированный текст
-                except Exception as e:
-                    # Пропускаем обновление текста, если возникла ошибка
-                    pass
+                                    # Если найдены лица
+                                    if face_count > 0:
+                                        # Добавляем информацию в отчет
+                                        self.detected_data["Лица"].append(f"Стр. {page_num+1}, изобр. {img_index+1}: {face_count} лиц")
+                                        
+                                        # Создаем имя временного файла
+                                        temp_img_path = f"temp_img_{random.randint(1000, 9999)}.png"
+                                        temp_files.append(temp_img_path)
+                                        
+                                        # Сохраняем анонимизированное изображение
+                                        cv2.imwrite(temp_img_path, anonymized_img)
+                                        
+                                        # Получаем прямоугольник изображения на странице
+                                        rects = page.get_image_rects(xref)
+                                        if rects:
+                                            rect = rects[0]
+                                            
+                                            # Удаляем оригинальное изображение
+                                            page.delete_image(xref)
+                                            
+                                            # Вставляем анонимизированное изображение
+                                            page.insert_image(rect, filename=temp_img_path)
+                            except Exception as e:
+                                print(f"Ошибка при обработке изображения {img_index} на странице {page_num}: {str(e)}")
+                                continue
+                    except Exception as e:
+                        print(f"Ошибка при получении списка изображений на странице {page_num}: {str(e)}")
+                        continue
             
-            # Если лица не были обнаружены, и ключ 'Лица' существует, удаляем его из отчета
-            if 'Лица' in self.detected_data and not self.detected_data['Лица']:
-                del self.detected_data['Лица']
+            # Проверка на пустой отчет - возможно нужен OCR
+            if all(not items for items in self.detected_data.values()):
+                # Если не нашли данные обычным способом, пробуем через OCR
+                pdf_document.close()
+                return self.process_scanned_pdf(pdf_path, data_types, detect_faces)
+            
+            # Если нет обнаруженных лиц, удаляем ключ из отчета
+            if "Лица" in self.detected_data and not self.detected_data["Лица"]:
+                del self.detected_data["Лица"]
+            
+            # Удаляем пустые разделы из отчета
+            for key in list(self.detected_data.keys()):
+                if not self.detected_data[key]:
+                    del self.detected_data[key]
             
             # Сохраняем изменения во временный файл
             temp_path = pdf_path.replace('.pdf', '_anonymized.pdf')
             pdf_document.save(temp_path)
             pdf_document.close()
             
-            return temp_path, "PDF обработан"
+            # Удаляем временные файлы
+            for temp_file in temp_files:
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
             
+            return temp_path, "PDF обработан"
         except Exception as e:
+            # Выводим полную информацию об ошибке
+            traceback_str = traceback.format_exc()
+            print(f"Ошибка при обработке PDF: {str(e)}\n{traceback_str}")
+            
+            # Возвращаем информацию об ошибке
             return None, f"Ошибка при обработке PDF: {str(e)}"
     
     def get_report(self):
@@ -304,16 +459,16 @@ class WorkerThread(QThread):
         self.kwargs = kwargs
         
     def run(self):
-        # Эмуляция прогресса (в реальном приложении будет основана на реальном прогрессе)
         for i in range(101):
             self.progress.emit(i)
-            self.msleep(10)  # Небольшая задержка
+            self.msleep(10)
             
-        # Выполняем функцию
         try:
             result, message = self.func(*self.args, **self.kwargs)
             self.finished.emit(result, message)
         except Exception as e:
+            traceback_str = traceback.format_exc()
+            print(f"Ошибка в рабочем потоке: {str(e)}\n{traceback_str}")
             self.finished.emit(None, f"Ошибка: {str(e)}")
 
 class ChatItemDelegate(QAbstractItemDelegate):
@@ -321,7 +476,6 @@ class ChatItemDelegate(QAbstractItemDelegate):
         super().__init__()
         
     def paint(self, painter, option, index):
-        # Получаем данные элемента
         data = index.data(Qt.UserRole)
         if not data:
             return
@@ -329,56 +483,45 @@ class ChatItemDelegate(QAbstractItemDelegate):
         text = data["text"]
         is_user = data["is_user"]
         
-        # Настройка цветов и стилей
         user_color = QColor(220, 240, 255)
         bot_color = QColor(240, 240, 240)
         text_color = QColor(0, 0, 0)
         
-        # Получаем прямоугольник для отрисовки
         rect = option.rect
         
-        # Рисуем фон
         background_color = user_color if is_user else bot_color
         painter.fillRect(rect, background_color)
         
-        # Рисуем границу
         painter.setPen(QColor(200, 200, 200))
         painter.drawRect(rect.adjusted(0, 0, -1, -1))
         
-        # Рисуем текст
         text_rect = rect.adjusted(10, 5, -10, -5)
         painter.setPen(text_color)
         painter.setFont(QFont("Arial", 9))
         
-        # Добавляем заголовок
         header = "Вы:" if is_user else "Бот:"
         header_font = QFont("Arial", 9, QFont.Bold)
         painter.setFont(header_font)
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignTop, header)
         
-        # Рисуем основной текст
         text_rect = text_rect.adjusted(0, 20, 0, 0)
         painter.setFont(QFont("Arial", 9))
         
-        # Разбиваем текст на строки для корректного отображения
         document = QTextDocument()
         document.setDefaultFont(QFont("Arial", 9))
         document.setTextWidth(text_rect.width())
         document.setHtml(text.replace("\n", "<br>"))
         
-        # Адаптируем размер элемента к содержимому
         if index.model():
-            height = document.size().height() + 30  # +30 для заголовка и отступов
+            height = document.size().height() + 30
             index.model().setData(index, QSize(int(text_rect.width()), int(height)), Qt.SizeHintRole)
         
-        # Отрисовываем текст
         painter.save()
         painter.translate(text_rect.topLeft())
         document.drawContents(painter)
         painter.restore()
     
     def sizeHint(self, option, index):
-        # Возвращаем размер, сохраненный в данных
         size = index.data(Qt.SizeHintRole)
         if size:
             return size
@@ -389,7 +532,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         self.anonymizer = AnonymizerEngine()
-        self.chatbot = ChatBot(self.anonymizer)
+        
+        if CHATBOT_AVAILABLE:
+            self.chatbot = ChatBot(self.anonymizer)
+        else:
+            self.chatbot = None
+            
         self.current_file_path = None
         self.initUI()
         
@@ -397,45 +545,37 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SafeMind - Анонимизация данных")
         self.setGeometry(100, 100, 1000, 750)
         
-        # Создаем центральный виджет и основной layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         
-        # Создаем вкладки для разных типов данных
         self.tabs = QTabWidget()
         
-        # Вкладка для текста
         self.text_tab = QWidget()
         self.setup_text_tab()
         self.tabs.addTab(self.text_tab, "Текст")
         
-        # Вкладка для изображений
         self.image_tab = QWidget()
         self.setup_image_tab()
         self.tabs.addTab(self.image_tab, "Изображения")
         
-        # Вкладка для PDF
         self.pdf_tab = QWidget()
         self.setup_pdf_tab()
         self.tabs.addTab(self.pdf_tab, "PDF-файлы")
         
-        # Вкладка отчета
         self.report_tab = QWidget()
         self.setup_report_tab()
         self.tabs.addTab(self.report_tab, "Отчет")
         
-        # Вкладка чат-бота
-        self.chat_tab = QWidget()
-        self.setup_chat_tab()
-        self.tabs.addTab(self.chat_tab, "Чат-бот")
+        if self.chatbot:
+            self.chat_tab = QWidget()
+            self.setup_chat_tab()
+            self.tabs.addTab(self.chat_tab, "Чат-бот")
         
         main_layout.addWidget(self.tabs)
         
-        # Создаем статусбар
         self.statusBar().showMessage('Готов к работе')
         
-        # Индикатор прогресса
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         main_layout.addWidget(self.progress_bar)
@@ -443,7 +583,6 @@ class MainWindow(QMainWindow):
     def setup_text_tab(self):
         layout = QVBoxLayout(self.text_tab)
         
-        # Область для ввода текста
         input_label = QLabel("Введите текст для анонимизации:")
         layout.addWidget(input_label)
         
@@ -451,10 +590,8 @@ class MainWindow(QMainWindow):
         self.text_input.setPlaceholderText("Вставьте текст, содержащий персональные данные...")
         layout.addWidget(self.text_input)
         
-        # Настройки анонимизации
         options_layout = QHBoxLayout()
         
-        # Чекбоксы для выбора типов данных
         self.text_options = {}
         options_widget = QWidget()
         options_grid = QGridLayout(options_widget)
@@ -465,19 +602,22 @@ class MainWindow(QMainWindow):
             self.text_options[data_type].setChecked(True)
             options_grid.addWidget(self.text_options[data_type], row, col)
             col += 1
-            if col > 2:  # 3 чекбокса в строке
+            if col > 2:
                 col = 0
                 row += 1
                 
         options_layout.addWidget(options_widget)
         layout.addLayout(options_layout)
         
-        # Кнопки действий
         buttons_layout = QHBoxLayout()
         
         self.anonymize_text_button = QPushButton("Анонимизировать")
         self.anonymize_text_button.clicked.connect(self.on_anonymize_text)
         buttons_layout.addWidget(self.anonymize_text_button)
+        
+        self.hide_personal_info_button = QPushButton("Скрыть личную информацию")
+        self.hide_personal_info_button.clicked.connect(self.on_hide_personal_info_text)
+        buttons_layout.addWidget(self.hide_personal_info_button)
         
         self.clear_text_button = QPushButton("Очистить")
         self.clear_text_button.clicked.connect(self.on_clear_text_tab)
@@ -485,7 +625,6 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(buttons_layout)
         
-        # Область для вывода результата
         result_label = QLabel("Результат:")
         layout.addWidget(result_label)
         
@@ -493,7 +632,6 @@ class MainWindow(QMainWindow):
         self.text_output.setReadOnly(True)
         layout.addWidget(self.text_output)
         
-        # Кнопка сохранения
         self.save_text_button = QPushButton("Сохранить результат")
         self.save_text_button.clicked.connect(self.on_save_text)
         self.save_text_button.setEnabled(False)
@@ -502,10 +640,8 @@ class MainWindow(QMainWindow):
     def setup_image_tab(self):
         layout = QVBoxLayout(self.image_tab)
         
-        # Область для загрузки и отображения изображения
         input_layout = QHBoxLayout()
         
-        # Левая панель с исходным изображением
         input_panel = QVBoxLayout()
         input_label = QLabel("Исходное изображение:")
         input_panel.addWidget(input_label)
@@ -522,7 +658,6 @@ class MainWindow(QMainWindow):
         
         input_layout.addLayout(input_panel)
         
-        # Правая панель с обработанным изображением
         output_panel = QVBoxLayout()
         output_label = QLabel("Анонимизированное изображение:")
         output_panel.addWidget(output_label)
@@ -541,10 +676,8 @@ class MainWindow(QMainWindow):
         input_layout.addLayout(output_panel)
         layout.addLayout(input_layout)
         
-        # Настройки анонимизации
         options_layout = QHBoxLayout()
         
-        # Чекбоксы для выбора типов данных
         self.image_options = {}
         options_widget = QWidget()
         options_grid = QGridLayout(options_widget)
@@ -555,24 +688,27 @@ class MainWindow(QMainWindow):
             self.image_options[data_type].setChecked(True)
             options_grid.addWidget(self.image_options[data_type], row, col)
             col += 1
-            if col > 2:  # 3 чекбокса в строке
+            if col > 2:
                 col = 0
                 row += 1
         
-        # Добавляем чекбокс для распознавания лиц
         self.detect_faces_checkbox = QCheckBox("Обнаружение и размытие лиц")
         self.detect_faces_checkbox.setChecked(True)
         options_grid.addWidget(self.detect_faces_checkbox, row + 1, 0, 1, 3)
                 
         options_layout.addWidget(options_widget)
         
-        # Кнопки действий
         buttons_layout = QHBoxLayout()
         
         self.anonymize_image_button = QPushButton("Анонимизировать")
         self.anonymize_image_button.clicked.connect(self.on_anonymize_image)
         self.anonymize_image_button.setEnabled(False)
         buttons_layout.addWidget(self.anonymize_image_button)
+        
+        self.hide_personal_info_button_image = QPushButton("Скрыть личную информацию")
+        self.hide_personal_info_button_image.clicked.connect(self.on_hide_personal_info_image)
+        self.hide_personal_info_button_image.setEnabled(False)
+        buttons_layout.addWidget(self.hide_personal_info_button_image)
         
         self.clear_image_button = QPushButton("Очистить")
         self.clear_image_button.clicked.connect(self.on_clear_image_tab)
@@ -585,11 +721,9 @@ class MainWindow(QMainWindow):
     def setup_pdf_tab(self):
         layout = QVBoxLayout(self.pdf_tab)
         
-        # Информация о PDF
         self.pdf_info_label = QLabel("Загрузите PDF-файл для анонимизации.")
         layout.addWidget(self.pdf_info_label)
         
-        # Кнопки для загрузки PDF
         pdf_buttons_layout = QHBoxLayout()
         
         self.load_pdf_button = QPushButton("Загрузить PDF")
@@ -600,10 +734,8 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(pdf_buttons_layout)
         
-        # Настройки анонимизации
         options_layout = QHBoxLayout()
         
-        # Чекбоксы для выбора типов данных
         self.pdf_options = {}
         options_widget = QWidget()
         options_grid = QGridLayout(options_widget)
@@ -614,24 +746,27 @@ class MainWindow(QMainWindow):
             self.pdf_options[data_type].setChecked(True)
             options_grid.addWidget(self.pdf_options[data_type], row, col)
             col += 1
-            if col > 2:  # 3 чекбокса в строке
+            if col > 2:
                 col = 0
                 row += 1
         
-        # Добавляем чекбокс для распознавания лиц
         self.pdf_detect_faces_checkbox = QCheckBox("Обнаружение и размытие лиц")
         self.pdf_detect_faces_checkbox.setChecked(True)
         options_grid.addWidget(self.pdf_detect_faces_checkbox, row + 1, 0, 1, 3)
                 
         options_layout.addWidget(options_widget)
         
-        # Кнопки действий
         buttons_layout = QHBoxLayout()
         
         self.anonymize_pdf_button = QPushButton("Анонимизировать PDF")
         self.anonymize_pdf_button.clicked.connect(self.on_anonymize_pdf)
         self.anonymize_pdf_button.setEnabled(False)
         buttons_layout.addWidget(self.anonymize_pdf_button)
+        
+        self.hide_personal_info_button_pdf = QPushButton("Скрыть личную информацию")
+        self.hide_personal_info_button_pdf.clicked.connect(self.on_hide_personal_info_pdf)
+        self.hide_personal_info_button_pdf.setEnabled(False)
+        buttons_layout.addWidget(self.hide_personal_info_button_pdf)
         
         self.clear_pdf_button = QPushButton("Очистить")
         self.clear_pdf_button.clicked.connect(self.on_clear_pdf_tab)
@@ -641,7 +776,6 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(options_layout)
         
-        # Область для предпросмотра PDF
         preview_label = QLabel("Предпросмотр первой страницы:")
         layout.addWidget(preview_label)
         
@@ -651,7 +785,6 @@ class MainWindow(QMainWindow):
         self.pdf_preview_label.setStyleSheet("border: 1px solid #cccccc;")
         layout.addWidget(self.pdf_preview_label)
         
-        # Кнопка сохранения
         self.save_pdf_button = QPushButton("Сохранить анонимизированный PDF")
         self.save_pdf_button.clicked.connect(self.on_save_pdf)
         self.save_pdf_button.setEnabled(False)
@@ -660,19 +793,16 @@ class MainWindow(QMainWindow):
     def setup_report_tab(self):
         layout = QVBoxLayout(self.report_tab)
         
-        # Заголовок
         report_header = QLabel("Отчет о найденных персональных данных")
         report_header.setFont(QFont("Arial", 14, QFont.Bold))
         report_header.setAlignment(Qt.AlignCenter)
         layout.addWidget(report_header)
         
-        # Текстовая область для отчета
         self.report_text = QTextEdit()
         self.report_text.setReadOnly(True)
         self.report_text.setPlaceholderText("Здесь будет отображен отчет после анонимизации...")
         layout.addWidget(self.report_text)
         
-        # Кнопки действий
         buttons_layout = QHBoxLayout()
         
         self.save_report_button = QPushButton("Сохранить отчет")
@@ -688,21 +818,17 @@ class MainWindow(QMainWindow):
     def setup_chat_tab(self):
         layout = QVBoxLayout(self.chat_tab)
         
-        # Заголовок
         chat_header = QLabel("SafeMind Чат-бот")
         chat_header.setFont(QFont("Arial", 14, QFont.Bold))
         chat_header.setAlignment(Qt.AlignCenter)
         layout.addWidget(chat_header)
         
-        # Описание
         chat_desc = QLabel("Задайте вопрос или введите команду для анонимизации данных")
         chat_desc.setAlignment(Qt.AlignCenter)
         layout.addWidget(chat_desc)
         
-        # Область чата
         chat_area = QSplitter(Qt.Vertical)
         
-        # История сообщений
         self.chat_history = QListWidget()
         self.chat_history.setWordWrap(True)
         self.chat_history.setStyleSheet("""
@@ -718,11 +844,9 @@ class MainWindow(QMainWindow):
             }
         """)
         
-        # Настраиваем делегат для отображения сообщений
         self.chat_history.setItemDelegate(ChatItemDelegate())
         chat_area.addWidget(self.chat_history)
         
-        # Поле ввода сообщений
         input_layout = QHBoxLayout()
         
         self.chat_input = QLineEdit()
@@ -738,12 +862,10 @@ class MainWindow(QMainWindow):
         input_widget.setLayout(input_layout)
         chat_area.addWidget(input_widget)
         
-        # Устанавливаем соотношение размеров
         chat_area.setSizes([400, 50])
         
         layout.addWidget(chat_area)
         
-        # Кнопки быстрых команд
         commands_layout = QHBoxLayout()
         
         quick_commands_label = QLabel("Быстрые команды:")
@@ -755,7 +877,6 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(commands_layout)
         
-        # Кнопки быстрых команд
         quick_commands_layout = QHBoxLayout()
         
         commands = ["Помощь", "Анонимизировать текст", "Размыть лица", "Функции"]
@@ -766,7 +887,6 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(quick_commands_layout)
         
-        # Добавляем приветственное сообщение
         self.add_bot_message(self.chatbot.greet("", None))
     
     # ---- Методы очистки вкладок ----
@@ -785,6 +905,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'anonymized_image'):
             delattr(self, 'anonymized_image')
         self.anonymize_image_button.setEnabled(False)
+        self.hide_personal_info_button_image.setEnabled(False)
         self.save_image_button.setEnabled(False)
         self.statusBar().showMessage('Вкладка изображений очищена')
     
@@ -795,6 +916,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'anonymized_pdf_path'):
             delattr(self, 'anonymized_pdf_path')
         self.anonymize_pdf_button.setEnabled(False)
+        self.hide_personal_info_button_pdf.setEnabled(False)
         self.save_pdf_button.setEnabled(False)
         self.statusBar().showMessage('Вкладка PDF очищена')
     
@@ -803,46 +925,56 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage('Отчет очищен')
     
     def on_clear_chat_tab(self):
+        if not hasattr(self, 'chat_history') or not hasattr(self, 'chatbot'):
+            return
+            
         self.chat_history.clear()
         self.chat_input.clear()
-        # Добавляем снова приветственное сообщение
         self.add_bot_message(self.chatbot.greet("", None))
         self.statusBar().showMessage('Чат очищен')
         
     # ---- Обработчики чат-бота ----
     
     def on_send_message(self):
+        if not hasattr(self, 'chat_input') or not hasattr(self, 'chatbot'):
+            return
+            
         message = self.chat_input.text().strip()
         if not message:
             return
         
-        # Добавляем сообщение пользователя в историю
         self.add_user_message(message)
         
-        # Обрабатываем сообщение с помощью чат-бота
         response = self.chatbot.process_message(message, self.current_file_path)
         
-        # Добавляем ответ бота в историю
         self.add_bot_message(response)
         
-        # Очищаем поле ввода
         self.chat_input.clear()
         
     def add_user_message(self, message):
+        if not hasattr(self, 'chat_history'):
+            return
+            
         item = QListWidgetItem()
         item.setData(Qt.UserRole, {"text": message, "is_user": True})
-        item.setSizeHint(QSize(self.chat_history.width(), 50))  # Начальный размер
+        item.setSizeHint(QSize(self.chat_history.width(), 50))
         self.chat_history.addItem(item)
         self.chat_history.scrollToBottom()
         
     def add_bot_message(self, message):
+        if not hasattr(self, 'chat_history'):
+            return
+            
         item = QListWidgetItem()
         item.setData(Qt.UserRole, {"text": message, "is_user": False})
-        item.setSizeHint(QSize(self.chat_history.width(), 100))  # Начальный размер
+        item.setSizeHint(QSize(self.chat_history.width(), 100))
         self.chat_history.addItem(item)
         self.chat_history.scrollToBottom()
         
     def add_quick_command(self, command):
+        if not hasattr(self, 'chat_input'):
+            return
+            
         self.chat_input.setText(command)
         self.on_send_message()
         
@@ -854,18 +986,35 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Предупреждение", "Введите текст для анонимизации")
             return
             
-        # Получаем выбранные типы данных
         selected_types = [data_type for data_type, checkbox in self.text_options.items() if checkbox.isChecked()]
         
-        # Обновляем текущий путь к файлу для чат-бота (в данном случае это не файл, а текст)
         self.current_file_path = "текст"
         
-        # Показываем прогресс
         self.progress_bar.setVisible(True)
         
-        # Запускаем анонимизацию в отдельном потоке
         self.worker = WorkerThread(
             lambda: (self.anonymizer.anonymize_text(input_text, selected_types), "Текст обработан")
+        )
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.on_text_processed)
+        self.worker.start()
+        
+    def on_hide_personal_info_text(self):
+        input_text = self.text_input.toPlainText()
+        if not input_text:
+            QMessageBox.warning(self, "Предупреждение", "Введите текст для анонимизации")
+            return
+            
+        # Выбираем только личные данные - все кроме банковских счетов, карт и IBAN
+        personal_data_types = ['ИИН', 'Телефон', 'Email', 'ФИО', 'Дата рождения', 'Возраст']
+        selected_types = [data_type for data_type in personal_data_types if data_type in self.text_options and self.text_options[data_type].isChecked()]
+        
+        self.current_file_path = "текст"
+        
+        self.progress_bar.setVisible(True)
+        
+        self.worker = WorkerThread(
+            lambda: (self.anonymizer.anonymize_text(input_text, selected_types), "Личная информация скрыта")
         )
         self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.on_text_processed)
@@ -879,9 +1028,8 @@ class MainWindow(QMainWindow):
             self.save_text_button.setEnabled(True)
             self.statusBar().showMessage(message)
             
-            # Обновляем отчет
             self.report_text.setText(self.anonymizer.get_report())
-            self.tabs.setCurrentIndex(3)  # Переключаемся на вкладку отчета
+            self.tabs.setCurrentIndex(3)
         else:
             QMessageBox.warning(self, "Ошибка", message)
     
@@ -913,14 +1061,13 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", "Не удалось загрузить изображение")
                 return
                 
-            # Масштабируем изображение для отображения
             pixmap = pixmap.scaled(400, 300, Qt.KeepAspectRatio)
             self.image_input_label.setPixmap(pixmap)
             self.image_input_path = file_path
             self.anonymize_image_button.setEnabled(True)
+            self.hide_personal_info_button_image.setEnabled(True)
             self.statusBar().showMessage(f"Изображение загружено: {file_path}")
             
-            # Обновляем текущий путь к файлу для чат-бота
             self.current_file_path = file_path
     
     def on_anonymize_image(self):
@@ -928,29 +1075,23 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Предупреждение", "Сначала загрузите изображение")
             return
             
-        # Получаем выбранные типы данных
         selected_types = [data_type for data_type, checkbox in self.image_options.items() if checkbox.isChecked()]
         
-        # Проверяем статус чекбокса обнаружения лиц
         detect_faces = self.detect_faces_checkbox.isChecked()
         
-        # Проверка существования файла
         try:
             import os
             if not os.path.exists(self.image_input_path):
                 QMessageBox.warning(self, "Ошибка", f"Файл не найден: {self.image_input_path}")
                 return
                 
-            # Пробуем прочитать изображение напрямую
             test_image = cv2.imread(self.image_input_path)
             if test_image is None:
-                # Альтернативный способ загрузки
                 try:
                     pil_image = Image.open(self.image_input_path)
                     test_image = np.array(pil_image.convert('RGB'))
                     test_image = cv2.cvtColor(test_image, cv2.COLOR_RGB2BGR)
                     
-                    # Создаем временную копию изображения с простым именем
                     temp_path = 'temp_image.png'
                     cv2.imwrite(temp_path, test_image)
                     self.image_input_path = temp_path
@@ -962,10 +1103,56 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Невозможно загрузить изображение: {str(e)}")
             return
             
-        # Показываем прогресс
         self.progress_bar.setVisible(True)
         
-        # Запускаем анонимизацию в отдельном потоке
+        self.worker = WorkerThread(
+            self.anonymizer.anonymize_image,
+            self.image_input_path,
+            selected_types,
+            detect_faces
+        )
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.on_image_processed)
+        self.worker.start()
+        
+    def on_hide_personal_info_image(self):
+        if not hasattr(self, 'image_input_path'):
+            QMessageBox.warning(self, "Предупреждение", "Сначала загрузите изображение")
+            return
+            
+        # Выбираем только личные данные
+        personal_data_types = ['ИИН', 'Телефон', 'Email', 'ФИО', 'Дата рождения', 'Возраст']
+        selected_types = [data_type for data_type in personal_data_types if data_type in self.image_options and self.image_options[data_type].isChecked()]
+        
+        # Всегда включаем распознавание лиц при скрытии личной информации
+        detect_faces = True
+        
+        try:
+            import os
+            if not os.path.exists(self.image_input_path):
+                QMessageBox.warning(self, "Ошибка", f"Файл не найден: {self.image_input_path}")
+                return
+                
+            test_image = cv2.imread(self.image_input_path)
+            if test_image is None:
+                try:
+                    pil_image = Image.open(self.image_input_path)
+                    test_image = np.array(pil_image.convert('RGB'))
+                    test_image = cv2.cvtColor(test_image, cv2.COLOR_RGB2BGR)
+                    
+                    temp_path = 'temp_image.png'
+                    cv2.imwrite(temp_path, test_image)
+                    self.image_input_path = temp_path
+                    QMessageBox.information(self, "Информация", "Создана временная копия изображения для обработки")
+                except Exception as e:
+                    QMessageBox.critical(self, "Ошибка", f"Невозможно обработать изображение: {str(e)}")
+                    return
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Невозможно загрузить изображение: {str(e)}")
+            return
+            
+        self.progress_bar.setVisible(True)
+        
         self.worker = WorkerThread(
             self.anonymizer.anonymize_image,
             self.image_input_path,
@@ -980,22 +1167,100 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         
         if result is not None:
-            # Конвертируем OpenCV изображение в QPixmap
             height, width, channel = result.shape
             bytes_per_line = 3 * width
             q_img = QImage(result.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
             pixmap = QPixmap.fromImage(q_img)
             
-            # Масштабируем изображение для отображения
             pixmap = pixmap.scaled(400, 300, Qt.KeepAspectRatio)
             self.image_output_label.setPixmap(pixmap)
             self.anonymized_image = result
             self.save_image_button.setEnabled(True)
             self.statusBar().showMessage(message)
             
-            # Обновляем отчет
             self.report_text.setText(self.anonymizer.get_report())
-            self.tabs.setCurrentIndex(3)  # Переключаемся на вкладку отчета
+            self.tabs.setCurrentIndex(3)
+        else:
+            QMessageBox.warning(self, "Ошибка", message)
+    
+    def on_save_image(self):
+        if not hasattr(self, 'anonymized_image'):
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить анонимизированное изображение", "", 
+            "Изображения (*.png *.jpg *.jpeg *.bmp);;Все файлы (*)"
+        )
+        
+        if file_path:
+            try:
+                cv2.imwrite(file_path, self.anonymized_image)
+                self.statusBar().showMessage(f"Изображение сохранено в {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка сохранения", str(e))
+    
+    def on_anonymize_image(self):
+        if not hasattr(self, 'image_input_path'):
+            QMessageBox.warning(self, "Предупреждение", "Сначала загрузите изображение")
+            return
+            
+        selected_types = [data_type for data_type, checkbox in self.image_options.items() if checkbox.isChecked()]
+        
+        detect_faces = self.detect_faces_checkbox.isChecked()
+        
+        try:
+            import os
+            if not os.path.exists(self.image_input_path):
+                QMessageBox.warning(self, "Ошибка", f"Файл не найден: {self.image_input_path}")
+                return
+                
+            test_image = cv2.imread(self.image_input_path)
+            if test_image is None:
+                try:
+                    pil_image = Image.open(self.image_input_path)
+                    test_image = np.array(pil_image.convert('RGB'))
+                    test_image = cv2.cvtColor(test_image, cv2.COLOR_RGB2BGR)
+                    
+                    temp_path = 'temp_image.png'
+                    cv2.imwrite(temp_path, test_image)
+                    self.image_input_path = temp_path
+                    QMessageBox.information(self, "Информация", "Создана временная копия изображения для обработки")
+                except Exception as e:
+                    QMessageBox.critical(self, "Ошибка", f"Невозможно обработать изображение: {str(e)}")
+                    return
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Невозможно загрузить изображение: {str(e)}")
+            return
+            
+        self.progress_bar.setVisible(True)
+        
+        self.worker = WorkerThread(
+            self.anonymizer.anonymize_image,
+            self.image_input_path,
+            selected_types,
+            detect_faces
+        )
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.on_image_processed)
+        self.worker.start()
+        
+    def on_image_processed(self, result, message):
+        self.progress_bar.setVisible(False)
+        
+        if result is not None:
+            height, width, channel = result.shape
+            bytes_per_line = 3 * width
+            q_img = QImage(result.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+            pixmap = QPixmap.fromImage(q_img)
+            
+            pixmap = pixmap.scaled(400, 300, Qt.KeepAspectRatio)
+            self.image_output_label.setPixmap(pixmap)
+            self.anonymized_image = result
+            self.save_image_button.setEnabled(True)
+            self.statusBar().showMessage(message)
+            
+            self.report_text.setText(self.anonymizer.get_report())
+            self.tabs.setCurrentIndex(3)
         else:
             QMessageBox.warning(self, "Ошибка", message)
     
@@ -1022,27 +1287,23 @@ class MainWindow(QMainWindow):
         
         if file_path:
             try:
-                # Загружаем PDF-файл и показываем предпросмотр первой страницы
                 pdf_document = fitz.open(file_path)
                 if pdf_document.page_count > 0:
                     page = pdf_document[0]
                     pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                     
-                    # Конвертируем в QImage и затем в QPixmap
                     img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
                     pixmap = QPixmap.fromImage(img)
                     
-                    # Устанавливаем предпросмотр
                     self.pdf_preview_label.setPixmap(pixmap.scaled(800, 400, Qt.KeepAspectRatio))
                     
-                    # Обновляем информацию
                     self.pdf_info_label.setText(f"PDF-файл: {file_path}\nСтраниц: {pdf_document.page_count}")
                     
                     self.current_pdf_path = file_path
                     self.anonymize_pdf_button.setEnabled(True)
+                    self.hide_personal_info_button_pdf.setEnabled(True)
                     self.statusBar().showMessage(f"PDF загружен: {file_path}")
                     
-                    # Обновляем текущий путь к файлу для чат-бота
                     self.current_file_path = file_path
                     
                 pdf_document.close()
@@ -1054,16 +1315,36 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Предупреждение", "Сначала загрузите PDF-файл")
             return
             
-        # Получаем выбранные типы данных
         selected_types = [data_type for data_type, checkbox in self.pdf_options.items() if checkbox.isChecked()]
         
-        # Проверяем статус чекбокса обнаружения лиц
         detect_faces = self.pdf_detect_faces_checkbox.isChecked()
         
-        # Показываем прогресс
         self.progress_bar.setVisible(True)
         
-        # Запускаем анонимизацию в отдельном потоке
+        self.worker = WorkerThread(
+            self.anonymizer.anonymize_pdf,
+            self.current_pdf_path,
+            selected_types,
+            detect_faces
+        )
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.on_pdf_processed)
+        self.worker.start()
+        
+    def on_hide_personal_info_pdf(self):
+        if not self.current_pdf_path:
+            QMessageBox.warning(self, "Предупреждение", "Сначала загрузите PDF-файл")
+            return
+            
+        # Выбираем только личные данные
+        personal_data_types = ['ИИН', 'Телефон', 'Email', 'ФИО', 'Дата рождения', 'Возраст']
+        selected_types = [data_type for data_type in personal_data_types if data_type in self.pdf_options and self.pdf_options[data_type].isChecked()]
+        
+        # Всегда включаем распознавание лиц при скрытии личной информации
+        detect_faces = True
+        
+        self.progress_bar.setVisible(True)
+        
         self.worker = WorkerThread(
             self.anonymizer.anonymize_pdf,
             self.current_pdf_path,
@@ -1081,29 +1362,26 @@ class MainWindow(QMainWindow):
             self.anonymized_pdf_path = result
             
             try:
-                # Показываем предпросмотр первой страницы анонимизированного PDF
                 pdf_document = fitz.open(result)
                 if pdf_document.page_count > 0:
                     page = pdf_document[0]
                     pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
                     
-                    # Конвертируем в QImage и затем в QPixmap
                     img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
                     pixmap = QPixmap.fromImage(img)
                     
-                    # Устанавливаем предпросмотр
                     self.pdf_preview_label.setPixmap(pixmap.scaled(800, 400, Qt.KeepAspectRatio))
                     
                 pdf_document.close()
             except Exception as e:
-                QMessageBox.warning(self, "Ошибка предпросмотра", str(e))
+                print(f"Ошибка предпросмотра PDF: {str(e)}")
+                QMessageBox.warning(self, "Ошибка предпросмотра", f"Не удалось показать предпросмотр: {str(e)}")
                 
             self.save_pdf_button.setEnabled(True)
             self.statusBar().showMessage(message)
             
-            # Обновляем отчет
             self.report_text.setText(self.anonymizer.get_report())
-            self.tabs.setCurrentIndex(3)  # Переключаемся на вкладку отчета
+            self.tabs.setCurrentIndex(3)
         else:
             QMessageBox.warning(self, "Ошибка", message)
     
@@ -1117,7 +1395,91 @@ class MainWindow(QMainWindow):
         
         if file_path:
             try:
-                # Копируем временный файл в выбранное пользователем место
+                import shutil
+                shutil.copy2(self.anonymized_pdf_path, file_path)
+                self.statusBar().showMessage(f"PDF сохранен в {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка сохранения", str(e))
+    
+    def on_save_report(self):
+        report_text = self.report_text.toPlainText()
+        if not report_text:
+            QMessageBox.warning(self, "Предупреждение", "Отчет пуст")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить отчет", "", "Текстовые файлы (*.txt);;Все файлы (*)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as file:
+                    file.write(report_text)
+                self.statusBar().showMessage(f"Отчет сохранен в {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка сохранения", str(e))
+    
+    def on_anonymize_pdf(self):
+        if not self.current_pdf_path:
+            QMessageBox.warning(self, "Предупреждение", "Сначала загрузите PDF-файл")
+            return
+            
+        selected_types = [data_type for data_type, checkbox in self.pdf_options.items() if checkbox.isChecked()]
+        
+        detect_faces = self.pdf_detect_faces_checkbox.isChecked()
+        
+        self.progress_bar.setVisible(True)
+        
+        self.worker = WorkerThread(
+            self.anonymizer.anonymize_pdf,
+            self.current_pdf_path,
+            selected_types,
+            detect_faces
+        )
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.on_pdf_processed)
+        self.worker.start()
+        
+    def on_pdf_processed(self, result, message):
+        self.progress_bar.setVisible(False)
+        
+        if result:
+            self.anonymized_pdf_path = result
+            
+            try:
+                pdf_document = fitz.open(result)
+                if pdf_document.page_count > 0:
+                    page = pdf_document[0]
+                    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                    
+                    img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+                    pixmap = QPixmap.fromImage(img)
+                    
+                    self.pdf_preview_label.setPixmap(pixmap.scaled(800, 400, Qt.KeepAspectRatio))
+                    
+                pdf_document.close()
+            except Exception as e:
+                print(f"Ошибка предпросмотра PDF: {str(e)}")
+                QMessageBox.warning(self, "Ошибка предпросмотра", f"Не удалось показать предпросмотр: {str(e)}")
+                
+            self.save_pdf_button.setEnabled(True)
+            self.statusBar().showMessage(message)
+            
+            self.report_text.setText(self.anonymizer.get_report())
+            self.tabs.setCurrentIndex(3)
+        else:
+            QMessageBox.warning(self, "Ошибка", message)
+    
+    def on_save_pdf(self):
+        if not hasattr(self, 'anonymized_pdf_path'):
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить анонимизированный PDF", "", "PDF-файлы (*.pdf);;Все файлы (*)"
+        )
+        
+        if file_path:
+            try:
                 import shutil
                 shutil.copy2(self.anonymized_pdf_path, file_path)
                 self.statusBar().showMessage(f"PDF сохранен в {file_path}")
